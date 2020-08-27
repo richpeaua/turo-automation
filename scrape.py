@@ -1,5 +1,8 @@
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException
 
 import datetime, time, re, csv, sys
 
@@ -11,6 +14,8 @@ SLEEP_SECONDS = 3
 
 class TuroCrawler:
     def __init__(self):
+        options = Options()
+        options.add_argument('--headless')
         self.driver = webdriver.Chrome()
         self.driver.set_page_load_timeout(30)
 
@@ -22,18 +27,21 @@ class TuroCrawler:
         self.stop()
 
     def login(self):
-        self.driver.get('https://turo.com/login')
-
-        username = self.driver.find_element_by_id('username')
+        self.driver.get('https://turo.com/us/en/login')
+         
+        frame = self.driver.find_element_by_class_name("managedIframe")
+        self.driver.switch_to.frame(frame)
+        
+        username = self.driver.find_element_by_id("email")
         username.send_keys(config.TURO_USERNAME)
 
-        password = self.driver.find_element_by_name('password')
+        password = self.driver.find_element_by_id('password')
         password.send_keys(config.TURO_PASSWORD)
 
-        self.driver.find_element_by_id("submit").click()
+        self.driver.find_element_by_class_name('emailLoginForm-button').click()
 
     def write_to_file(self, rows, out):
-        print 'Writing to file', out
+        print(f'Writing to file {out}')
         rows = [x for x in rows if x != None]
         with open(out, 'w') as f:
             w = csv.DictWriter(f,
@@ -53,10 +61,10 @@ class TuroCrawler:
         return datetime.datetime.strptime(cleaned_str, '%a, %b %d, %Y\n%I:%M %p')
 
     def get_trip(self, reservation_url):
-        print 'Getting trip', reservation_url
-
-        self.driver.get(reservation_url + '/receipt/')
-
+        print(f'Getting trip {reservation_url}')
+        
+        self.driver.get(reservation_url + '/receipt')
+        
         pickup, dropoff = [self.get_datetime(x.text) for x in self.driver.find_elements_by_class_name('receiptSchedule')]
 
         line_items = self.driver.find_elements_by_class_name('line-item')
@@ -83,17 +91,21 @@ class TuroCrawler:
                     reimbursement_tolls = float(r.text.lower().split(' ')[-1])
                 if 'additional miles driven' in r.text.lower():
                     reimbursement_mileage = float(r.text.lower().split(' ')[-1])
-        except Exception, e:
-            print 'No reimbursements found for', reservation_url
+        except Exception as e:
+            print(f'No reimbursements found for {reservation_url}')
 
         return results
 
     # Only trips that have a receipt and have already happened
     def is_valid_trip(self, el):
-        return 'completed' in el.get_attribute('class') or 'cancelled' in el.get_attribute('class')
+        try:
+            cancelled_trip = el.find_element_by_class_name('historyFeedItem-statusExplanation') 
+            return False
+        except NoSuchElementException:
+            return True
 
     def process_cancelled_trip(self, cancelled_trip):
-        print 'Processing ', cancelled_trip.text
+        print(f'Processing {cancelled_trip.text}')
 
         if 'You cancelled this trip' in cancelled_trip.text:
             earnings = 0.0
@@ -114,10 +126,10 @@ class TuroCrawler:
 
     def get_trips(self, page_slug = None):
         if page_slug is None:
-            self.driver.get('https://turo.com/dashboard/history')
+            self.driver.get('https://turo.com/us/en/trips/history')
         else:
-            print 'Getting https://turo.com/dashboard/history?' + page_slug
-            self.driver.get('https://turo.com/dashboard/history?' + page_slug)
+            print('Getting https://turo.com/us/en/trips/history?' + page_slug)
+            self.driver.get('https://turo.com/us/en/trips/history?' + page_slug)
 
         # Wait for the page to load
         time.sleep(SLEEP_SECONDS)
@@ -129,17 +141,19 @@ class TuroCrawler:
             if ord(last_page.text) == 8250:
                 next_page = last_page.get_attribute('href').split('?')[-1]
         except IndexError:
-            print "Only one page"
+            print("Only one page")
 
-        trip_elements = self.driver.find_elements_by_class_name('dashboardActivityFeed-link')
+        trip_elements = self.driver.find_elements_by_class_name('historyFeedItem-details')
 
-        trip_slugs = [te.get_attribute('href') for te in trip_elements]
+        valid_trip_slugs = [te.get_attribute('href') for te in trip_elements if self.is_valid_trip(te)]
+        
+        cancelled_trip_slugs = [te.get_attribute('href') for te in trip_elements if not self.is_valid_trip(te)]
 
-        print 'Trip Slugs', trip_slugs
+        print(f'Trip Slugs {valid_trip_slugs}')
+        
+        trip_details = [self.get_trip(trip_slug) for trip_slug in valid_trip_slugs]
 
-        trip_details = [self.get_trip(trip_slug) for trip_slug in trip_slugs]
-
-        print trip_details
+        print(trip_details)
 
         # Get the last page link and see if there's more
         if next_page is not None:

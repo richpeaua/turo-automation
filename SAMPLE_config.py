@@ -1,2 +1,0 @@
-TURO_USERNAME = ''
-TURO_PASSWORD = ''
